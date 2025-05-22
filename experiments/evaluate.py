@@ -424,6 +424,7 @@ def main(
 
         print("Evaluation took", time() - start)
 def get_project(model, tok, layer, hparams):
+    # 给出论文中的P
     force_recompute = False
     cov = get_cov(
         model,

@@ -16,17 +16,19 @@ from .compute_ks import compute_ks
 from .compute_z import compute_z, get_module_input_output_at_words, find_fact_lookup_idx
 from .AlphaEdit_hparams import AlphaEditHyperParams
 # Cache variable(s)
+# 上下文模板
 CONTEXT_TEMPLATES_CACHE = None
+# 协方差矩阵
 COV_CACHE = {}
 
 def apply_AlphaEdit_to_model(
-    model: AutoModelForCausalLM,
-    tok: AutoTokenizer,
-    requests: List[Dict],
-    hparams: AlphaEditHyperParams,
-    cache_template: Optional[str] = None,
-    cache_c = None,
-    P = None,
+    model: AutoModelForCausalLM,    # 要编辑的模型
+    tok: AutoTokenizer, # 要编辑模型的tokenizer
+    requests: List[Dict],   # 每条编辑请求包含的prompt, subject, target
+    hparams: AlphaEditHyperParams, # 超参数
+    cache_template: Optional[str] = None, # 缓存文件名模板
+    cache_c = None, # 缓存矩阵
+    P = None, # 缓存矩阵
 ) -> Dict[str, Tuple[torch.Tensor]]:
     """
     Executes the MEMIT update algorithm for the specified update at the specified layer
@@ -34,6 +36,7 @@ def apply_AlphaEdit_to_model(
     """
 
     # Update target and print info
+    # 在每条request的target前加上空格，以便tokenizer拆解
     requests = deepcopy(requests)
     for i, request in enumerate(requests):
         if request["target_new"]["str"][0] != " ":
@@ -102,6 +105,8 @@ def apply_AlphaEdit_to_model(
                     },
                 )
                 print(f"Cached k/v pair at {cache_fname}")
+    
+    # 将所有的z_list拼接成一个tensor
     zs = torch.stack(z_list, dim=1)
 
     for i, layer in enumerate(hparams.layers):
@@ -127,6 +132,8 @@ def apply_AlphaEdit_to_model(
         repeat_factor = (layer_ks.size(1) // targets.size(1))
         targets = targets.repeat_interleave(repeat_factor, dim=1)
         resid = targets / (len(hparams.layers) - i)  # Distribute residual across layers
+        # 最关键的式子： (P x (K_1 x K_1^T + cache_c) + L2 x I) x upd_matrix = P x K_1 x R^T
+        # 其中，cache_c就是之前编辑矩阵的乘积缓存(K_p x K_p^T + cache_c)
         upd_matrix = torch.linalg.solve(
                 P[i,:,:].cuda() @ (layer_ks @ layer_ks.T + cache_c[i,:,:].cuda()) + hparams.L2*torch.eye(layer_ks.shape[0], dtype=torch.float,device="cuda"), P[i,:,:].cuda() @ layer_ks @ resid.T
         )
