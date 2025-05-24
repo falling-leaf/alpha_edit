@@ -77,28 +77,41 @@ def main(
     # Create new dir if not continuing from prev run OR prev run doesn't exist
     if (
         continue_from_run is None
+        # RESULTS_DIR来自util/globals.py，实际数据位于globals.yml
         or not (run_dir := RESULTS_DIR / dir_name / continue_from_run).exists()
     ):
         continue_from_run = None
+    # 如果continue_from_run为None，说明是开一个新的实验
     if continue_from_run is None:
         alg_dir = RESULTS_DIR / dir_name
+        # 如果alg_dir这个文件目录存在（**: exists()：查询文件目录是否存在）
         if alg_dir.exists():
+            # 获取最新的测试编号：将目录（例如run_000）解析为[run, 000]，取最后一项并转化为数字，整合成一个list
             id_list = [
                 int(str(x).split("_")[-1])
+                # **: iterdir()：迭代该目录下的所有目录
                 for x in alg_dir.iterdir()
+                # **: isnumeric()：判断字符串是否为数字
                 if str(x).split("_")[-1].isnumeric()
             ]
+            # 最后确定下来当前迭代的run_id的值
             run_id = 0 if not id_list else max(id_list) + 1
         else:
             run_id = 0
+        # **: zfill()：将数字补0到3位
         run_dir = RESULTS_DIR / dir_name / f"run_{str(run_id).zfill(3)}"
+        # 创建文件夹
         run_dir.mkdir(parents=True, exist_ok=True)
     print(f"Results will be stored at {run_dir}")
+    # 如果算法隶属于MEMIT（例如MEMIT_seq，MEMIT_rect等），统一使用MEMIT参数
+    # **: "MEMIT" in alg_name：判断alg_name中是否包含MEMIT（字符串包含子字符串）
     if "MEMIT" in alg_name:
     # Get run hyperparameters
         params_path = (
+            # 如果是继续跑，那么就从上次的run_dir中读取参数
             run_dir / "params.json"
             if continue_from_run is not None
+            # 否则从hparams/<alg_name>中读取参数
             else HPARAMS_DIR / "MEMIT" / hparams_fname
         )
     else:
@@ -107,16 +120,25 @@ def main(
             if continue_from_run is not None
             else HPARAMS_DIR / alg_name / hparams_fname
         )
+    # 解析params的json文件
     hparams = params_class.from_json(params_path)
+    # 如果是新开的实验，那么还需要把params.json复制到工作目录中
+    # **: shutil.copyfile()：复制文件
     if not (run_dir / "params.json").exists():
         shutil.copyfile(params_path, run_dir / "params.json")
     print(f"Executing {alg_name} with parameters {hparams}")
 
     # Instantiate vanilla model
+    # model_name定义为了union，可输入str或tuple
+    # 如果是字符串，那么就直接从huggingface上下载模型
+    # 如果是元组，那么就直接使用传入的模型
     if type(model_name) is str:
         print("Instantiating model")
+        # **: AutoModelForCausalLM.from_pretrained()：从huggingface上下载模型
         model = AutoModelForCausalLM.from_pretrained(model_name).cuda()
+        # **: AutoTokenizer.from_pretrained()：从huggingface上下载tokenizer
         tok = AutoTokenizer.from_pretrained(model_name)
+        # 设置填充符为句子结束符，这是由于某些模型的tok没有预设置pad，所以统一一下
         tok.pad_token = tok.eos_token
     else:
         model, tok = model_name
@@ -131,9 +153,11 @@ def main(
         assert ds_name != "cf", f"{ds_name} does not support multiple edits"
 
     ds_class, ds_eval_method = DS_DICT[ds_name]
+    # 利用方法初始化数据集
     ds = ds_class(DATA_DIR, tok=tok, size=dataset_size_limit)
     # Get cache templates
     cache_template = None
+    # 实际运行中似乎默认use_cache为False，因此该部分暂时不考虑解读
     if use_cache:
         if any(alg in alg_name for alg in ["MEMIT","AlphaEdit", "MEMIT_seq", "MEMIT_prune", "MEMIT_rect"]):
             cache_template = (
@@ -191,9 +215,14 @@ def main(
                         },
                     )
                     print(f"Cached k/v pair at {cache_fname}")
+    # 初始化AlphaEdit需要的一些配置
     if any(alg in alg_name for alg in ["AlphaEdit", "MEMIT_seq", "MEMIT_prune", "NSE"]):
         # Iterate through dataset
+        # 获取W_out对应的参数，其中：
+        # hparams.rewrite_module.tmp是一个模板，用于给transformer库提供不同模型的对应参数提取语句
+        # hparams.layers[-1]是目标层中的最后一层（具体数值可见hparams中对应的json）
         W_out = nethook.get_parameter(model, f"{hparams.rewrite_module_tmp.format(hparams.layers[-1])}.weight")
+        # 由于gpt2和其他模型的weight的size不一样，所以提取的对应shape也不同
         if hparams.model_name == "gpt2-xl":
             cache_c = torch.zeros((len(hparams.layers), W_out.shape[0], W_out.shape[0]), device="cpu")
             if alg_name == "AlphaEdit":
@@ -203,7 +232,9 @@ def main(
             if alg_name == "AlphaEdit":
                 P = torch.zeros((len(hparams.layers), W_out.shape[1], W_out.shape[1]), device="cpu")
         del W_out
+    # 如果是AlphaEdit，那么计算P
     if alg_name == "AlphaEdit":
+        # 对每一层都要计算，因此P是一个三维列表
         for i, layer in enumerate(hparams.layers):
             P[i,:,:] = get_project(model,tok,layer,hparams)
         torch.save(P, "null_space_project.pt")
@@ -426,6 +457,7 @@ def main(
 def get_project(model, tok, layer, hparams):
     # 给出论文中的P
     force_recompute = False
+    # 获取对应layer的K_0 @ K_0^T
     cov = get_cov(
         model,
         tok,
@@ -437,10 +469,19 @@ def get_project(model, tok, layer, hparams):
         hparams.mom2_dtype,
         force_recompute=force_recompute,
     ).cpu()
+    # 对输出进行奇异值分解，提取对应的正交矩阵U
     U, S, _ = torch.linalg.svd(cov, full_matrices=False)
     threshold = hparams.nullspace_threshold
+    # 这里与论文一致（因为实际操作中奇异值为0过少，因此设置一个小的阈值，如果小于它则认为奇异值为0
+    # **: nonzero(as_tuple=True)：返回非零元素的索引
+    # 最终small_singular_indices返回的是奇异值小于threshold的索引的列表
     small_singular_indices = (S < threshold).nonzero(as_tuple=True)[0]
     print(len(small_singular_indices))
+    # 通过切片，提取出论文中对应的U_2（即奇异值为0的那部分对应的正交矩阵中的向量）
+    # 核心在于以下几个内容（预设U_1对应奇异值非零的向量，U_2对应奇异值为零的向量）：
+    # 1. 对于秩为r的矩阵进行奇异值分解，会出现r个零奇异值；如果只关注对角矩阵和正交矩阵中非零的部分，它们可以直接相乘得到原来的矩阵（因此，K_0K_0^T奇异值分解后的最左侧矩阵为U_1）
+    # 2. U_2^T @ U_1 = 0，这是因为二者分别在零空间和非零空间，由于U @ U^T = I，而U_2^T @ U_1刚好处在结果中为0的矩阵部分（即右上/左下），因此有该等式。
+    # 3. 由1、2可得，P的最右侧矩阵应当为U_2^T，于是设置P = U_2 @ U_2^T
     return U[:, small_singular_indices] @ U[:, small_singular_indices].T
 def window(seq, n=2):
     "Returns a sliding window (of width n) over data from the iterable"
@@ -457,6 +498,7 @@ def window(seq, n=2):
 def chunks(arr, n):
     """Yield successive n-sized chunks from arr."""
     for i in range(0, len(arr), n):
+        # **: yield：每次调用时将结果作为列表的一部分，最终将整体返回
         yield arr[i : i + n]
 
 

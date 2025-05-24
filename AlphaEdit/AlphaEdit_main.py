@@ -174,10 +174,13 @@ def get_cov(
     """
 
     model_name = model.config._name_or_path.replace("/", "_")
+    # 因为K_0本身预设知识已知，因此(model_name, layer_name)就能确定唯一cov，因此设置一个cache避免重复计算
     key = (model_name, layer_name)
 
     print(f"Retrieving covariance statistics for {model_name} @ {layer_name}.")
+    # 如果不在cache，或者强制重计算，那么就计算
     if key not in COV_CACHE or force_recompute:
+        # 该提取方法继承自ROME，因此先不做进一步解析
         stat = layer_stats(
             model,
             tok,
