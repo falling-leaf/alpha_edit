@@ -134,15 +134,28 @@ def main(
     # 如果是元组，那么就直接使用传入的模型
     if type(model_name) is str:
         print("Instantiating model")
-        # **: AutoModelForCausalLM.from_pretrained()：从huggingface上下载模型
-        model = AutoModelForCausalLM.from_pretrained(model_name).cuda()
-        # **: AutoTokenizer.from_pretrained()：从huggingface上下载tokenizer
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,  # 半精度，节省显存
+            device_map="auto"           # 自动分配到多张显卡
+        )
         tok = AutoTokenizer.from_pretrained(model_name)
-        # 设置填充符为句子结束符，这是由于某些模型的tok没有预设置pad，所以统一一下
         tok.pad_token = tok.eos_token
     else:
         model, tok = model_name
         model_name = model.config._name_or_path
+
+    # if type(model_name) is str:
+    #     print("Instantiating model")
+    #     # **: AutoModelForCausalLM.from_pretrained()：从huggingface上下载模型
+    #     model = AutoModelForCausalLM.from_pretrained(model_name).cuda()
+    #     # **: AutoTokenizer.from_pretrained()：从huggingface上下载tokenizer
+    #     tok = AutoTokenizer.from_pretrained(model_name)
+    #     # 设置填充符为句子结束符，这是由于某些模型的tok没有预设置pad，所以统一一下
+    #     tok.pad_token = tok.eos_token
+    # else:
+    #     model, tok = model_name
+    #     model_name = model.config._name_or_path
 
     # Load data
     print("Loading dataset, attribute snippets, tf-idf data")
@@ -234,10 +247,15 @@ def main(
         del W_out
     # 如果是AlphaEdit，那么计算P
     if alg_name == "AlphaEdit":
-        # 对每一层都要计算，因此P是一个三维列表
-        for i, layer in enumerate(hparams.layers):
-            P[i,:,:] = get_project(model,tok,layer,hparams)
-        torch.save(P, "null_space_project.pt")
+        # 直接从文件加载P，而不是重新计算
+        P = torch.load("data/stats/null_space_project.pt")
+    # if alg_name == "AlphaEdit":
+    #     # 对每一层都要计算，因此P是一个三维列表
+    #     for i, layer in enumerate(hparams.layers):
+    #         P[i,:,:] = get_project(model,tok,layer,hparams)
+    #     torch.save(P, "null_space_project.pt")
+
+    
     # hs = get_module_input_output_at_words(
     #         model,
     #         tok,
